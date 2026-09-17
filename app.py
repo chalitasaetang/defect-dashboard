@@ -391,51 +391,65 @@ def fmt_be(dt) -> str:
 # ---------------------------------------------------------------
 # File upload + inputs
 # ---------------------------------------------------------------
+
+@st.cache_data(show_spinner="Reading Excel file…")
+def load_excel_data(file_bytes: bytes):
+    """Parse both sheets once per uploaded file. Cached on the file's bytes,
+    so touching the date picker or target % fields does NOT re-parse the
+    (potentially 79,000-row) Excel file on every rerun — only a genuinely
+    new upload does."""
+    xls = pd.ExcelFile(BytesIO(file_bytes))
+
+    # Sheet name for the defect log changed from "DATA" to "ตำหนิ" in newer
+    # exports; support both so older files still work.
+    defect_sheet_name = "ตำหนิ" if "ตำหนิ" in xls.sheet_names else ("DATA" if "DATA" in xls.sheet_names else None)
+    if defect_sheet_name is None:
+        return None, None, "Could not find the defect sheet (expected 'ตำหนิ' or 'DATA') in the uploaded file."
+
+    # Header is on the 2nd row of the sheet (index 1)
+    df = pd.read_excel(xls, sheet_name=defect_sheet_name, header=1)
+
+    required_cols = ["วันที่เกรด", "ตำหนิ", "จำนวน(Cu)", "เกรด", "จาก", "ข้อมูล"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        return None, None, f"Missing required columns: {', '.join(missing)}"
+
+    df["วันที่เกรด"] = pd.to_datetime(df["วันที่เกรด"], errors="coerce")
+
+    # Sheet 2: daily Production Volume + Reject after press, one row per day
+    production_sheet_name = "ยอดผลิต" if "ยอดผลิต" in xls.sheet_names else None
+    prod_df = pd.DataFrame()
+    if production_sheet_name:
+        prod_df = pd.read_excel(xls, sheet_name=production_sheet_name, header=1)
+        prod_df.columns = [str(c).strip() for c in prod_df.columns]
+        date_col = next((c for c in prod_df.columns if "วันที่" in c), None)
+        prod_col = next((c for c in prod_df.columns if "ยอดผลิต" in c), None)
+        reject_col = next((c for c in prod_df.columns if "Reject" in c or "reject" in c), None)
+        if date_col and prod_col and reject_col:
+            prod_df[date_col] = pd.to_datetime(prod_df[date_col], errors="coerce")
+            prod_df[prod_col] = pd.to_numeric(prod_df[prod_col], errors="coerce").fillna(0)
+            prod_df[reject_col] = pd.to_numeric(prod_df[reject_col], errors="coerce").fillna(0)
+            prod_df = prod_df.rename(columns={date_col: "วันที่", prod_col: "ยอดผลิต(m3)", reject_col: "Reject(m3)"})
+            prod_df = prod_df.dropna(subset=["วันที่"])
+        else:
+            prod_df = pd.DataFrame()
+
+    return df, prod_df, None
+
+
 uploaded_file = st.file_uploader("Upload Excel file (.xlsx)", type=["xlsx"])
 
 if uploaded_file is not None:
     try:
-        # Sheet name for the defect log changed from "DATA" to "ตำหนิ" in newer
-        # exports; support both so older files still work.
-        xls = pd.ExcelFile(uploaded_file)
-        defect_sheet_name = "ตำหนิ" if "ตำหนิ" in xls.sheet_names else ("DATA" if "DATA" in xls.sheet_names else None)
-        if defect_sheet_name is None:
-            st.error("Could not find the defect sheet (expected 'ตำหนิ' or 'DATA') in the uploaded file.")
+        df, prod_df, load_error = load_excel_data(uploaded_file.getvalue())
+        if load_error:
+            st.error(load_error)
             st.stop()
-
-        # Header is on the 2nd row of the sheet (index 1)
-        df = pd.read_excel(xls, sheet_name=defect_sheet_name, header=1)
-
-        required_cols = ["วันที่เกรด", "ตำหนิ", "จำนวน(Cu)", "เกรด", "จาก", "ข้อมูล"]
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            st.error(f"Missing required columns: {', '.join(missing)}")
-            st.stop()
-
-        df["วันที่เกรด"] = pd.to_datetime(df["วันที่เกรด"], errors="coerce")
 
         valid_dates = df["วันที่เกรด"].dropna()
         if valid_dates.empty:
             st.error("No valid dates found in the 'วันที่เกรด' column")
             st.stop()
-
-        # Sheet 2: daily Production Volume + Reject after press, one row per day
-        production_sheet_name = "ยอดผลิต" if "ยอดผลิต" in xls.sheet_names else None
-        prod_df = pd.DataFrame()
-        if production_sheet_name:
-            prod_df = pd.read_excel(xls, sheet_name=production_sheet_name, header=1)
-            prod_df.columns = [str(c).strip() for c in prod_df.columns]
-            date_col = next((c for c in prod_df.columns if "วันที่" in c), None)
-            prod_col = next((c for c in prod_df.columns if "ยอดผลิต" in c), None)
-            reject_col = next((c for c in prod_df.columns if "Reject" in c or "reject" in c), None)
-            if date_col and prod_col and reject_col:
-                prod_df[date_col] = pd.to_datetime(prod_df[date_col], errors="coerce")
-                prod_df[prod_col] = pd.to_numeric(prod_df[prod_col], errors="coerce").fillna(0)
-                prod_df[reject_col] = pd.to_numeric(prod_df[reject_col], errors="coerce").fillna(0)
-                prod_df = prod_df.rename(columns={date_col: "วันที่", prod_col: "ยอดผลิต(m3)", reject_col: "Reject(m3)"})
-                prod_df = prod_df.dropna(subset=["วันที่"])
-            else:
-                prod_df = pd.DataFrame()
 
         if prod_df.empty:
             st.warning(
@@ -537,37 +551,58 @@ if uploaded_file is not None:
         )
 
         # ---------------------------------------------------------------
-        # PDF export — own clearly visible row
+        # PDF export — built on demand (not on every rerun) and cached,
+        # since generating it (vector chart + tables) is not free.
         # ---------------------------------------------------------------
-        try:
-            pdf_bytes = build_pdf_report(
-                line_display=line_display,
-                period_label=period_label_early,
-                production_m3=production_m3,
+        @st.cache_data(show_spinner=False)
+        def _cached_pdf_bytes(
+            line_display, period_label, production_m3,
+            pct_defect, target_defect_pct, total_defect_m3,
+            pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
+            grade_summary_json, loc_summary_json, top5_json, defect_df_json,
+        ):
+            grade_summary_df = pd.read_json(BytesIO(grade_summary_json.encode()), orient="split")
+            loc_summary_df = pd.read_json(BytesIO(loc_summary_json.encode()), orient="split")
+            top5_df = pd.read_json(BytesIO(top5_json.encode()), orient="split")
+            defect_df_full = pd.read_json(BytesIO(defect_df_json.encode()), orient="split")
+            return build_pdf_report(
+                line_display=line_display, period_label=period_label, production_m3=production_m3,
                 pct_defect=pct_defect, target_defect_pct=target_defect_pct, total_defect_m3=total_defect_m3,
                 pct_reject=pct_reject, target_reject_pct=target_reject_pct,
                 reject_m3_input=reject_m3_input, reject_from_data=reject_from_data,
-                grade_summary_df=grade_summary, loc_summary_df=loc_summary,
-                top5_df=top5, defect_df_full=defect_df,
+                grade_summary_df=grade_summary_df, loc_summary_df=loc_summary_df,
+                top5_df=top5_df, defect_df_full=defect_df_full,
             )
-            dl_col, note_col = st.columns([1, 3])
-            with dl_col:
+
+        dl_col, note_col = st.columns([1, 3])
+        with dl_col:
+            prepare_pdf = st.button("📄 Prepare PDF for download", use_container_width=True, type="primary")
+        with note_col:
+            if not THAI_FONT_OK:
+                st.warning(
+                    "⚠️ Thai font not found (NotoSansThai.ttf) — defect names in the PDF may not render. "
+                    "Make sure NotoSansThai.ttf is in the same folder as app.py, or that this machine has internet access."
+                )
+
+        if prepare_pdf:
+            try:
+                with st.spinner("Building PDF…"):
+                    pdf_bytes = _cached_pdf_bytes(
+                        line_display, period_label_early, production_m3,
+                        pct_defect, target_defect_pct, total_defect_m3,
+                        pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
+                        grade_summary.to_json(orient="split"), loc_summary.to_json(orient="split"),
+                        top5.to_json(orient="split"), defect_df.to_json(orient="split"),
+                    )
                 st.download_button(
-                    label="📄 Export Dashboard as PDF",
+                    label="⬇️ Download PDF",
                     data=pdf_bytes,
                     file_name=f"dashboard_{line_display}_{start_d}_{end_d}.pdf".replace(" ", "_"),
                     mime="application/pdf",
                     use_container_width=True,
-                    type="primary",
                 )
-            with note_col:
-                if not THAI_FONT_OK:
-                    st.warning(
-                        "⚠️ Thai font not found (NotoSansThai.ttf) — defect names in the PDF may not render. "
-                        "Make sure NotoSansThai.ttf is in the same folder as app.py, or that this machine has internet access."
-                    )
-        except Exception as pdf_err:
-            st.error(f"⚠️ Failed to generate PDF: {pdf_err}")
+            except Exception as pdf_err:
+                st.error(f"⚠️ Failed to generate PDF: {pdf_err}")
 
         st.markdown("<div style='margin-top:4px;'></div>", unsafe_allow_html=True)
 
