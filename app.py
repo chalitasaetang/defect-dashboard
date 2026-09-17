@@ -87,22 +87,27 @@ def ensure_thai_font() -> str | None:
     """Return a usable Thai TTF path. Prefers the font bundled next to app.py;
     falls back to downloading NotoSansThai once (needs internet) if not bundled.
     Needed because defect names (ตำหนิ) stay in Thai per spec."""
-    if os.path.exists(THAI_FONT_PATH) and os.path.getsize(THAI_FONT_PATH) > 1000:
-        return THAI_FONT_PATH
+    global THAI_FONT_DEBUG
+    if os.path.exists(THAI_FONT_PATH):
+        size = os.path.getsize(THAI_FONT_PATH)
+        if size > 1000:
+            return THAI_FONT_PATH
+        THAI_FONT_DEBUG = f"Bundled font file found but is only {size} bytes (expected ~200KB) — likely corrupted or an incomplete upload."
     try:
         urllib.request.urlretrieve(THAI_FONT_URL, THAI_FONT_PATH)
         if os.path.getsize(THAI_FONT_PATH) > 1000:
             return THAI_FONT_PATH
-    except Exception:
-        pass
+    except Exception as e:
+        THAI_FONT_DEBUG = f"Bundled font missing, and download fallback failed: {e}"
     return None
 
 _THAI_FONT_REGISTERED = False
 THAI_FONT_NAME = "Helvetica"
 THAI_FONT_OK = False
+THAI_FONT_DEBUG = ""
 
 def register_thai_font():
-    global _THAI_FONT_REGISTERED, THAI_FONT_NAME, THAI_FONT_OK
+    global _THAI_FONT_REGISTERED, THAI_FONT_NAME, THAI_FONT_OK, THAI_FONT_DEBUG
     if _THAI_FONT_REGISTERED:
         return THAI_FONT_NAME
     font_path = ensure_thai_font()
@@ -111,14 +116,15 @@ def register_thai_font():
             pdfmetrics.registerFont(TTFont("NotoSansThai", font_path))
             THAI_FONT_NAME = "NotoSansThai"
             THAI_FONT_OK = True
-        except Exception:
+        except Exception as e:
             THAI_FONT_NAME = "Helvetica"
             THAI_FONT_OK = False
+            THAI_FONT_DEBUG = f"Font file found at {font_path} but ReportLab could not load it: {e}"
     _THAI_FONT_REGISTERED = True
     return THAI_FONT_NAME
 
 
-def build_defect_chart_drawing(top5_df, width_mm=95, height_mm=70) -> Drawing:
+def build_defect_chart_drawing(top5_df, width_mm=95, height_mm=76) -> Drawing:
     """Native ReportLab vector bar chart of Top 5 defects — no external image libs needed."""
     width = width_mm * mm
     height = height_mm * mm
@@ -126,6 +132,8 @@ def build_defect_chart_drawing(top5_df, width_mm=95, height_mm=70) -> Drawing:
 
     data_sorted = top5_df.sort_values("จำนวน(Cu)", ascending=False)
     values = [round(v, 2) for v in data_sorted["จำนวน(Cu)"].tolist()]
+    has_pct_col = "%ของตำหนิทั้งหมด" in data_sorted.columns
+    pcts = data_sorted["%ของตำหนิทั้งหมด"].tolist() if has_pct_col else [None] * len(values)
     # Keep category labels short for the chart (defect names can be long in Thai)
     cats = [str(n)[:12] for n in data_sorted["ตำหนิ"].tolist()]
 
@@ -151,7 +159,7 @@ def build_defect_chart_drawing(top5_df, width_mm=95, height_mm=70) -> Drawing:
 
     drawing.add(chart)
 
-    # Value labels above each bar
+    # Value labels above each bar — matches the dashboard's "X.XX m³ (Y.Y%)" format
     if values:
         max_v = max(values) if max(values) > 0 else 1
         plot_h = chart.height
@@ -161,8 +169,13 @@ def build_defect_chart_drawing(top5_df, width_mm=95, height_mm=70) -> Drawing:
         for i, v in enumerate(values):
             bar_h = (v / max_v) * plot_h if max_v else 0
             x_center = chart.x + slot_w * i + slot_w / 2
-            y_top = chart.y + bar_h + 2 * mm
-            drawing.add(String(x_center, y_top, f"{v:.1f}", fontSize=7,
+            # Stagger every other label slightly higher so labels on adjacent
+            # bars of similar height don't collide horizontally.
+            stagger = (3 * mm) if (i % 2 == 1) else 0
+            y_top = chart.y + bar_h + 2 * mm + stagger
+            pct = pcts[i]
+            label_text = f"{v:.2f} m3 ({pct:.1f}%)" if pct is not None else f"{v:.2f} m3"
+            drawing.add(String(x_center, y_top, label_text, fontSize=5.8,
                                 fillColor=colors.HexColor(COLOR_PRIMARY),
                                 textAnchor="middle", fontName="Helvetica-Bold"))
     return drawing
@@ -323,7 +336,7 @@ def build_pdf_report(
     # --- Chart column (now on the left, mirrors the dashboard) ---
     chart_col_elems = [Paragraph("Top 5 Defect — Chart", h2)]
     if top5_df is not None and not top5_df.empty:
-        chart_col_elems.append(build_defect_chart_drawing(top5_df, width_mm=95, height_mm=70))
+        chart_col_elems.append(build_defect_chart_drawing(top5_df, width_mm=95, height_mm=76))
     else:
         chart_col_elems.append(Paragraph("No data", small))
     chart_stack = Table([[e] for e in chart_col_elems], colWidths=[95 * mm])
@@ -574,14 +587,20 @@ if uploaded_file is not None:
                 top5_df=top5_df, defect_df_full=defect_df_full,
             )
 
+        # Check the Thai font status now (not just inside build_pdf_report) so
+        # the warning below reflects the real state, with a specific reason.
+        register_thai_font()
+
         dl_col, note_col = st.columns([1, 3])
         with dl_col:
             prepare_pdf = st.button("📄 Prepare PDF for download", use_container_width=True, type="primary")
         with note_col:
             if not THAI_FONT_OK:
+                reason = f" ({THAI_FONT_DEBUG})" if THAI_FONT_DEBUG else ""
                 st.warning(
-                    "⚠️ Thai font not found (NotoSansThai.ttf) — defect names in the PDF may not render. "
-                    "Make sure NotoSansThai.ttf is in the same folder as app.py, or that this machine has internet access."
+                    f"⚠️ Thai font not available for PDF export{reason}. Defect names in the PDF may not render "
+                    "correctly. Try re-uploading NotoSansThai.ttf to the repo (as a binary file, not via 'Edit' "
+                    "in the browser), or check that this machine has internet access."
                 )
 
         if prepare_pdf:
