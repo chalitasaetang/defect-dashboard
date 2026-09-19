@@ -6,6 +6,8 @@ from io import BytesIO
 import os
 import urllib.request
 
+import pymupdf  # PyMuPDF — used to turn the report PDF page into a JPG
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
@@ -75,7 +77,7 @@ def loc_en(v):
 
 
 # ---------------------------------------------------------------
-# Thai-capable font for PDF export (bundled next to app.py; downloads once as fallback)
+# Thai-capable font for the report (bundled next to app.py; downloads once as fallback)
 # ---------------------------------------------------------------
 THAI_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansThai.ttf")
 THAI_FONT_URL = (
@@ -189,7 +191,8 @@ def build_pdf_report(
 ) -> bytes:
     """Compact single-page (A4) defect summary report, laid out to mirror the
     dashboard: Grade + Source breakdown stacked on the left, Top-5 chart on
-    the right — for a professional, executive-ready one-page PDF."""
+    the right — for a professional, executive-ready one-page report.
+    Built as a PDF first, then rasterised to JPG by pdf_bytes_to_jpg()."""
     font_name = register_thai_font()
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -392,6 +395,17 @@ def build_pdf_report(
     return buf.getvalue()
 
 
+def pdf_bytes_to_jpg(pdf_bytes: bytes, dpi: int = 200, quality: int = 92) -> bytes:
+    """Render page 1 of the report PDF to a JPG (A4, single page)."""
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        page = doc[0]
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(dpi / 72, dpi / 72), alpha=False)
+        return pix.tobytes("jpeg", jpg_quality=quality)
+    finally:
+        doc.close()
+
+
 # ---------------------------------------------------------------
 # Helpers: Buddhist Era date formatting (kept as BE, per spec)
 # ---------------------------------------------------------------
@@ -527,7 +541,7 @@ if uploaded_file is not None:
 
         reject_from_data = defect_df.loc[defect_df["เกรด"] == "REJECT", "จำนวน(Cu)"].sum()
 
-        # Pre-compute summaries (also needed by the PDF export button near the top)
+        # Pre-compute summaries (also needed by the JPG export button near the top)
         grade_summary = pd.DataFrame()
         loc_summary = pd.DataFrame()
         top5 = pd.DataFrame()
@@ -564,11 +578,11 @@ if uploaded_file is not None:
         )
 
         # ---------------------------------------------------------------
-        # PDF export — built on demand (not on every rerun) and cached,
-        # since generating it (vector chart + tables) is not free.
+        # JPG export — built on demand (not on every rerun) and cached,
+        # since generating it (vector chart + tables + rasterising) is not free.
         # ---------------------------------------------------------------
         @st.cache_data(show_spinner=False)
-        def _cached_pdf_bytes(
+        def _cached_jpg_bytes(
             line_display, period_label, production_m3,
             pct_defect, target_defect_pct, total_defect_m3,
             pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
@@ -578,7 +592,7 @@ if uploaded_file is not None:
             loc_summary_df = pd.read_json(BytesIO(loc_summary_json.encode()), orient="split")
             top5_df = pd.read_json(BytesIO(top5_json.encode()), orient="split")
             defect_df_full = pd.read_json(BytesIO(defect_df_json.encode()), orient="split")
-            return build_pdf_report(
+            pdf_bytes = build_pdf_report(
                 line_display=line_display, period_label=period_label, production_m3=production_m3,
                 pct_defect=pct_defect, target_defect_pct=target_defect_pct, total_defect_m3=total_defect_m3,
                 pct_reject=pct_reject, target_reject_pct=target_reject_pct,
@@ -586,6 +600,7 @@ if uploaded_file is not None:
                 grade_summary_df=grade_summary_df, loc_summary_df=loc_summary_df,
                 top5_df=top5_df, defect_df_full=defect_df_full,
             )
+            return pdf_bytes_to_jpg(pdf_bytes)
 
         # Check the Thai font status now (not just inside build_pdf_report) so
         # the warning below reflects the real state, with a specific reason.
@@ -593,20 +608,20 @@ if uploaded_file is not None:
 
         dl_col, note_col = st.columns([1, 3])
         with dl_col:
-            prepare_pdf = st.button("📄 Prepare PDF for download", use_container_width=True, type="primary")
+            prepare_jpg = st.button("🖼️ Prepare JPG for download", use_container_width=True, type="primary")
         with note_col:
             if not THAI_FONT_OK:
                 reason = f" ({THAI_FONT_DEBUG})" if THAI_FONT_DEBUG else ""
                 st.warning(
-                    f"⚠️ Thai font not available for PDF export{reason}. Defect names in the PDF may not render "
+                    f"⚠️ Thai font not available for JPG export{reason}. Defect names in the image may not render "
                     "correctly. Try re-uploading NotoSansThai.ttf to the repo (as a binary file, not via 'Edit' "
                     "in the browser), or check that this machine has internet access."
                 )
 
-        if prepare_pdf:
+        if prepare_jpg:
             try:
-                with st.spinner("Building PDF…"):
-                    pdf_bytes = _cached_pdf_bytes(
+                with st.spinner("Building JPG…"):
+                    jpg_bytes = _cached_jpg_bytes(
                         line_display, period_label_early, production_m3,
                         pct_defect, target_defect_pct, total_defect_m3,
                         pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
@@ -614,14 +629,14 @@ if uploaded_file is not None:
                         top5.to_json(orient="split"), defect_df.to_json(orient="split"),
                     )
                 st.download_button(
-                    label="⬇️ Download PDF",
-                    data=pdf_bytes,
-                    file_name=f"dashboard_{line_display}_{start_d}_{end_d}.pdf".replace(" ", "_"),
-                    mime="application/pdf",
+                    label="⬇️ Download JPG",
+                    data=jpg_bytes,
+                    file_name=f"dashboard_{line_display}_{start_d}_{end_d}.jpg".replace(" ", "_"),
+                    mime="image/jpeg",
                     use_container_width=True,
                 )
-            except Exception as pdf_err:
-                st.error(f"⚠️ Failed to generate PDF: {pdf_err}")
+            except Exception as jpg_err:
+                st.error(f"⚠️ Failed to generate JPG: {jpg_err}")
 
         st.markdown("<div style='margin-top:4px;'></div>", unsafe_allow_html=True)
 
