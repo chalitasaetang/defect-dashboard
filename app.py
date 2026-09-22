@@ -35,6 +35,27 @@ COLOR_BG_CARD = "#F7F8FA"       # light neutral card background
 COLOR_BORDER = "#DCE1E8"        # soft border
 COLOR_TEXT_MUTED = "#6B7280"
 
+# ---------------------------------------------------------------
+# Date-range theme: the template's primary color and the Top 5 bar
+# chart color both switch based on how many days are selected —
+# 1 day = blue, 2-27 days = yellow, 28+ days (a full month) = red.
+# Applies to both the on-screen Dashboard and the exported JPG.
+# ---------------------------------------------------------------
+THEME_COLORS = {
+    "blue":   {"primary": "#2C3E6B", "bar": "#1B3A6B", "bar_line": "#0F2647"},
+    "yellow": {"primary": "#8A6D1D", "bar": "#D4A017", "bar_line": "#8A6D1D"},
+    "red":    {"primary": "#8B2E22", "bar": "#B8352A", "bar_line": "#7A251C"},
+}
+
+def theme_for_day_count(n_days: int) -> str:
+    """1 day -> blue, 2-27 days -> yellow, 28+ days (a full month) -> red."""
+    if n_days <= 1:
+        return "blue"
+    elif n_days <= 27:
+        return "yellow"
+    else:
+        return "red"
+
 st.markdown(
     f"""
     <style>
@@ -126,8 +147,12 @@ def register_thai_font():
     return THAI_FONT_NAME
 
 
-def build_defect_chart_drawing(top5_df, width_mm=95, height_mm=76) -> Drawing:
+def build_defect_chart_drawing(top5_df, width_mm=95, height_mm=76, primary_hex=None, bar_hex=None, bar_line_hex=None) -> Drawing:
     """Native ReportLab vector bar chart of Top 5 defects — no external image libs needed."""
+    primary_hex = primary_hex or COLOR_PRIMARY
+    bar_hex = bar_hex or COLOR_BLUE_BAR
+    bar_line_hex = bar_line_hex or COLOR_BLUE_BAR_LINE
+
     width = width_mm * mm
     height = height_mm * mm
     drawing = Drawing(width, height)
@@ -153,10 +178,10 @@ def build_defect_chart_drawing(top5_df, width_mm=95, height_mm=76) -> Drawing:
     chart.valueAxis.labels.fontSize = 7
     chart.valueAxis.labels.fontName = "NotoSansThai" if THAI_FONT_OK else "Helvetica"
     chart.valueAxis.valueMin = 0
-    chart.bars[0].fillColor = colors.HexColor(COLOR_BLUE_BAR)
+    chart.bars[0].fillColor = colors.HexColor(bar_hex)
     chart.barWidth = 9
     chart.groupSpacing = 10
-    chart.bars.strokeColor = colors.HexColor(COLOR_BLUE_BAR_LINE)
+    chart.bars.strokeColor = colors.HexColor(bar_line_hex)
     chart.bars.strokeWidth = 0.5
 
     drawing.add(chart)
@@ -178,7 +203,7 @@ def build_defect_chart_drawing(top5_df, width_mm=95, height_mm=76) -> Drawing:
             pct = pcts[i]
             label_text = f"{v:.2f} m3 ({pct:.1f}%)" if pct is not None else f"{v:.2f} m3"
             drawing.add(String(x_center, y_top, label_text, fontSize=5.8,
-                                fillColor=colors.HexColor(COLOR_PRIMARY),
+                                fillColor=colors.HexColor(primary_hex),
                                 textAnchor="middle", fontName="Helvetica-Bold"))
     return drawing
 
@@ -188,12 +213,25 @@ def build_pdf_report(
     pct_defect, target_defect_pct, total_defect_m3,
     pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
     grade_summary_df, loc_summary_df, top5_df, defect_df_full,
+    primary_hex=None, bar_hex=None, bar_line_hex=None, header_mode="range",
 ) -> bytes:
     """Compact single-page (A4) defect summary report, laid out to mirror the
     dashboard: Grade + Source breakdown stacked on the left, Top-5 chart on
     the right — for a professional, executive-ready one-page report.
-    Built as a PDF first, then rasterised to JPG by pdf_bytes_to_jpg()."""
+    Built as a PDF first, then rasterised to JPG by pdf_bytes_to_jpg().
+
+    primary_hex / bar_hex / bar_line_hex: theme colors picked by the caller
+    based on the selected date range (1 day = blue, 2-27 days = yellow,
+    28+ days = red); default to the standard navy-blue theme if not given.
+    header_mode: "single_day" -> header reads "As of <period_label>";
+    "monthly" -> header reads "Monthly report : <period_label>" (period_label
+    should be a "<Month> <BE year>" string, e.g. "August 2569"); "range"
+    (default) -> header reads "Period : <period_label>".
+    """
     font_name = register_thai_font()
+    primary_hex = primary_hex or COLOR_PRIMARY
+    bar_hex = bar_hex or COLOR_BLUE_BAR
+    bar_line_hex = bar_line_hex or COLOR_BLUE_BAR_LINE
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
@@ -201,18 +239,19 @@ def build_pdf_report(
     )
 
     h1 = ParagraphStyle("h1", fontName=font_name, fontSize=12.5, leading=15.5, spaceAfter=0)
-    h2 = ParagraphStyle("h2", fontName=font_name, fontSize=11.5, leading=14, textColor=colors.HexColor(COLOR_PRIMARY), spaceBefore=4, spaceAfter=3)
+    h2 = ParagraphStyle("h2", fontName=font_name, fontSize=11.5, leading=14, textColor=colors.HexColor(primary_hex), spaceBefore=4, spaceAfter=3)
     body = ParagraphStyle("body", fontName=font_name, fontSize=9.5, leading=12, textColor=colors.HexColor(COLOR_TEXT_MUTED))
     small = ParagraphStyle("small", fontName=font_name, fontSize=8.5, leading=12.5, textColor=colors.HexColor(COLOR_TEXT_MUTED))
-    small_bold = ParagraphStyle("small_bold", fontName=font_name, fontSize=9.5, leading=12, textColor=colors.HexColor(COLOR_PRIMARY), spaceBefore=3)
+    small_bold = ParagraphStyle("small_bold", fontName=font_name, fontSize=9.5, leading=12, textColor=colors.HexColor(primary_hex), spaceBefore=3)
 
     elems = []
 
-    # --- Header banner (navy bar, mirrors the dashboard's line-name header) ---
-    header_text = f"{line_display} _ Defect Board after Grading &nbsp;&nbsp;Period : {period_label}"
+    # --- Header banner (theme-colored bar, mirrors the dashboard's line-name header) ---
+    period_word = {"single_day": "As of", "monthly": "Monthly report :"}.get(header_mode, "Period :")
+    header_text = f"{line_display} _ Defect Board after Grading &nbsp;&nbsp;{period_word} {period_label}"
     header_tab = Table([[Paragraph(f"<font color='white'>{header_text}</font>", h1)]], colWidths=[171 * mm])
     header_tab.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(COLOR_PRIMARY)),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(primary_hex)),
         ("TOPPADDING", (0, 0), (-1, -1), 10),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
         ("LEFTPADDING", (0, 0), (-1, -1), 10),
@@ -261,7 +300,7 @@ def build_pdf_report(
         pct_reject > target_reject_pct, "Reject after press", f"{reject_m3_input:,.2f} m3",
         colors.HexColor(COLOR_BAD if pct_reject > target_reject_pct else COLOR_GOOD),
     )
-    card3_style_value = ParagraphStyle("card3_value", fontName=font_name, fontSize=19, leading=22, textColor=colors.HexColor(COLOR_PRIMARY))
+    card3_style_value = ParagraphStyle("card3_value", fontName=font_name, fontSize=19, leading=22, textColor=colors.HexColor(primary_hex))
     card3_title_style = ParagraphStyle("card3_title", fontName=font_name, fontSize=8.5, leading=10, textColor=colors.HexColor(COLOR_TEXT_MUTED))
     card3_extra_style = ParagraphStyle("card3_extra", fontName=font_name, fontSize=7.5, leading=9.5, textColor=colors.HexColor(COLOR_TEXT_MUTED))
     card3_inner = Table(
@@ -276,7 +315,7 @@ def build_pdf_report(
         ("TOPPADDING", (0, 0), (-1, -1), 1.5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(COLOR_BG_CARD)),
-        ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(COLOR_PRIMARY)),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(primary_hex)),
         ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor(COLOR_BORDER)),
     ]))
 
@@ -314,7 +353,7 @@ def build_pdf_report(
     ltab.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), font_name),
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(COLOR_PRIMARY)),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(primary_hex)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor(COLOR_BORDER)),
         ("TOPPADDING", (0, 0), (-1, -1), 1.5),
@@ -339,7 +378,10 @@ def build_pdf_report(
     # --- Chart column (now on the left, mirrors the dashboard) ---
     chart_col_elems = [Paragraph("Top 5 Defect — Chart", h2)]
     if top5_df is not None and not top5_df.empty:
-        chart_col_elems.append(build_defect_chart_drawing(top5_df, width_mm=95, height_mm=76))
+        chart_col_elems.append(build_defect_chart_drawing(
+            top5_df, width_mm=95, height_mm=76,
+            primary_hex=primary_hex, bar_hex=bar_hex, bar_line_hex=bar_line_hex,
+        ))
     else:
         chart_col_elems.append(Paragraph("No data", small))
     chart_stack = Table([[e] for e in chart_col_elems], colWidths=[95 * mm])
@@ -517,6 +559,20 @@ if uploaded_file is not None:
         else:
             start_d, end_d = min_d, max_d
 
+        # Date-range theme: recompute on every rerun based on the selected
+        # range's day count (inclusive), applied to both the Dashboard and
+        # the exported JPG.
+        n_days_selected = (end_d - start_d).days + 1
+        is_single_day = n_days_selected <= 1
+        theme_key = theme_for_day_count(n_days_selected)
+        THEME_PRIMARY = THEME_COLORS[theme_key]["primary"]
+        THEME_BAR = THEME_COLORS[theme_key]["bar"]
+        THEME_BAR_LINE = THEME_COLORS[theme_key]["bar_line"]
+        # header_mode drives the report/dashboard title: a single day gets
+        # "As of ...", a 28-31 day span (a full month) gets "Monthly report
+        # : <Month> <BE year>", anything else keeps "Period : <range>".
+        header_mode = "single_day" if is_single_day else ("monthly" if theme_key == "red" else "range")
+
         mask = (df["วันที่เกรด"].dt.date >= start_d) & (df["วันที่เกรด"].dt.date <= end_d)
         df_period = df.loc[mask].copy()
 
@@ -564,13 +620,28 @@ if uploaded_file is not None:
             )
             top5["%ของตำหนิทั้งหมด"] = (top5["จำนวน(Cu)"] / total_defect_m3 * 100) if total_defect_m3 > 0 else 0
 
-        period_label_early = f"{fmt_be(pd.Timestamp(start_d))} - {fmt_be(pd.Timestamp(end_d))}"
+        MONTH_NAMES_EN = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December",
+        ]
+
+        def fmt_monthly_label(a_date) -> str:
+            """'<Month> <BE year>' using the start date's month, e.g. 'August 2569'.
+            The year is taken as stored in the file (Buddhist Era), matching fmt_be."""
+            return f"{MONTH_NAMES_EN[a_date.month - 1]} {a_date.year}"
+
+        if header_mode == "single_day":
+            period_label_early = fmt_be(pd.Timestamp(start_d))
+        elif header_mode == "monthly":
+            period_label_early = fmt_monthly_label(start_d)
+        else:
+            period_label_early = f"{fmt_be(pd.Timestamp(start_d))} - {fmt_be(pd.Timestamp(end_d))}"
 
         st.markdown("---")
 
         line_display = production_line if production_line else "Unspecified Line"
         st.markdown(
-            f'<div style="background: linear-gradient(90deg, {COLOR_PRIMARY} 0%, #4A5B99 100%); '
+            f'<div style="background: linear-gradient(90deg, {THEME_PRIMARY} 0%, #4A5B99 100%); '
             f'padding: 18px 24px; border-radius: 12px; margin-bottom: 12px;">'
             f'<span style="color: white; font-size: 28px; font-weight: 700;">🏭 {line_display}</span>'
             f'</div>',
@@ -587,6 +658,7 @@ if uploaded_file is not None:
             pct_defect, target_defect_pct, total_defect_m3,
             pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
             grade_summary_json, loc_summary_json, top5_json, defect_df_json,
+            primary_hex, bar_hex, bar_line_hex, header_mode,
         ):
             grade_summary_df = pd.read_json(BytesIO(grade_summary_json.encode()), orient="split")
             loc_summary_df = pd.read_json(BytesIO(loc_summary_json.encode()), orient="split")
@@ -599,6 +671,8 @@ if uploaded_file is not None:
                 reject_m3_input=reject_m3_input, reject_from_data=reject_from_data,
                 grade_summary_df=grade_summary_df, loc_summary_df=loc_summary_df,
                 top5_df=top5_df, defect_df_full=defect_df_full,
+                primary_hex=primary_hex, bar_hex=bar_hex, bar_line_hex=bar_line_hex,
+                header_mode=header_mode,
             )
             return pdf_bytes_to_jpg(pdf_bytes)
 
@@ -627,6 +701,7 @@ if uploaded_file is not None:
                         pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
                         grade_summary.to_json(orient="split"), loc_summary.to_json(orient="split"),
                         top5.to_json(orient="split"), defect_df.to_json(orient="split"),
+                        THEME_PRIMARY, THEME_BAR, THEME_BAR_LINE, header_mode,
                     )
                 st.download_button(
                     label="⬇️ Download JPG",
@@ -643,7 +718,13 @@ if uploaded_file is not None:
         # ---------------------------------------------------------------
         # Summary boxes: Total Defect %, Reject %
         # ---------------------------------------------------------------
-        period_label = f"{fmt_be(pd.Timestamp(start_d))} - {fmt_be(pd.Timestamp(end_d))}"
+        period_label = period_label_early
+        if header_mode == "single_day":
+            period_label_display = f"As of {period_label}"
+        elif header_mode == "monthly":
+            period_label_display = f"Monthly report : {period_label}"
+        else:
+            period_label_display = f"Period: {period_label}"
 
         def summary_box(title, value_pct, target_pct, extra_m3_label, extra_m3_value):
             over = value_pct > target_pct
@@ -664,7 +745,7 @@ if uploaded_file is not None:
                 unsafe_allow_html=True,
             )
 
-        st.markdown(f"#### 🗓️ Period: {period_label}")
+        st.markdown(f"#### 🗓️ {period_label_display}")
         box1, box2, box3 = st.columns(3)
         with box1:
             summary_box("Total Defect %", pct_defect, target_defect_pct, "Total Defect", total_defect_m3)
@@ -672,9 +753,9 @@ if uploaded_file is not None:
             summary_box("Reject after press %", pct_reject, target_reject_pct, "Reject after press", reject_m3_input)
         with box3:
             st.markdown(
-                f'<div style="background-color:{COLOR_BG_CARD}; border:1px solid {COLOR_BORDER}; border-left:5px solid {COLOR_PRIMARY}; border-radius:10px; padding:18px; margin-bottom:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">'
+                f'<div style="background-color:{COLOR_BG_CARD}; border:1px solid {COLOR_BORDER}; border-left:5px solid {THEME_PRIMARY}; border-radius:10px; padding:18px; margin-bottom:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">'
                 f'<div style="font-size:15px; color:{COLOR_TEXT_MUTED}; font-weight:600;">Production Volume</div>'
-                f'<div style="font-size:38px; font-weight:800; color:{COLOR_PRIMARY}; margin:4px 0;">{production_m3:,.2f}</div>'
+                f'<div style="font-size:38px; font-weight:800; color:{THEME_PRIMARY}; margin:4px 0;">{production_m3:,.2f}</div>'
                 f'<div style="font-size:13px; color:{COLOR_TEXT_MUTED};">m³</div>'
                 f'<div style="font-size:12px; color:{COLOR_TEXT_MUTED}; margin-top:4px;">Reject from data (Grade=REJECT): <b>{reject_from_data:,.2f} m³</b></div>'
                 f'</div>',
@@ -712,7 +793,7 @@ if uploaded_file is not None:
                     f'background-color:{COLOR_BG_CARD}; border:1px solid {COLOR_BORDER}; '
                     f'border-radius:10px; padding:12px 6px; min-width:0; text-align:center;">'
                     f'<span style="font-size:12px; color:{COLOR_TEXT_MUTED}; font-weight:600; white-space:nowrap;">{label}</span>'
-                    f'<span style="font-size:17px; font-weight:800; color:{COLOR_PRIMARY}; margin-top:2px;">{r["จำนวน(Cu)"]:.2f} m³</span>'
+                    f'<span style="font-size:17px; font-weight:800; color:{THEME_PRIMARY}; margin-top:2px;">{r["จำนวน(Cu)"]:.2f} m³</span>'
                     f'<span style="font-size:11px; color:{COLOR_ACCENT}; margin-top:2px;">{pct_val:.2f}%</span>'
                     f'</div>'
                 )
@@ -725,7 +806,7 @@ if uploaded_file is not None:
 
         with col_left:
             st.markdown(
-                f"<div style='font-size:18px; font-weight:700; color:{COLOR_PRIMARY}; margin-bottom:6px;'>🔵 Top 5 Defect — {period_label}</div>",
+                f"<div style='font-size:18px; font-weight:700; color:{THEME_PRIMARY}; margin-bottom:6px;'>🔵 Top 5 Defect — {period_label_display}</div>",
                 unsafe_allow_html=True,
             )
             if not top5.empty:
@@ -739,11 +820,11 @@ if uploaded_file is not None:
                     x="ตำหนิ",
                     y="จำนวน(Cu)",
                     text="label",
-                    color_discrete_sequence=[COLOR_BLUE_BAR],
+                    color_discrete_sequence=[THEME_BAR],
                 )
                 fig.update_traces(
                     textposition="outside",
-                    marker_line_color=COLOR_BLUE_BAR_LINE, marker_line_width=1,
+                    marker_line_color=THEME_BAR_LINE, marker_line_width=1,
                     textfont_size=13, textfont_color="black",
                 )
                 fig.update_layout(
@@ -761,12 +842,12 @@ if uploaded_file is not None:
 
         with col_right:
             render_chip_row(
-                f"<div style='font-size:18px; font-weight:700; color:{COLOR_PRIMARY}; margin-bottom:6px;'>🏷️ Defect by Grade</div>",
+                f"<div style='font-size:18px; font-weight:700; color:{THEME_PRIMARY}; margin-bottom:6px;'>🏷️ Defect by Grade</div>",
                 grade_summary, "เกรด", translate_fn=lambda g: f"Grade {g}", pct_col="%",
             )
             st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
             render_chip_row(
-                f"<div style='font-size:18px; font-weight:700; color:{COLOR_PRIMARY}; margin-bottom:6px;'>🏭 Defect by Source</div>",
+                f"<div style='font-size:18px; font-weight:700; color:{THEME_PRIMARY}; margin-bottom:6px;'>🏭 Defect by Source</div>",
                 loc_summary, "จาก", translate_fn=loc_en, pct_denominator=total_defect_m3,
             )
 
@@ -787,7 +868,7 @@ if uploaded_file is not None:
 
                 st.markdown(
                     f'<div style="border-left:4px solid {COLOR_ACCENT}; padding-left:12px; margin-top:14px;">'
-                    f'<span style="font-size:17px; font-weight:700; color:{COLOR_PRIMARY};">'
+                    f'<span style="font-size:17px; font-weight:700; color:{THEME_PRIMARY};">'
                     f'{rank}. {defect_name} — {defect_total:.2f} m³ ({defect_pct:.2f}%)</span>'
                     f'</div>',
                     unsafe_allow_html=True,
