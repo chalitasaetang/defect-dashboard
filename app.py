@@ -305,8 +305,7 @@ def build_pdf_report(
     card3_extra_style = ParagraphStyle("card3_extra", fontName=font_name, fontSize=7.5, leading=9.5, textColor=colors.HexColor(COLOR_TEXT_MUTED))
     card3_inner = Table(
         [[Paragraph("Production Volume", card3_title_style)],
-         [Paragraph(f"{production_m3:,.2f} m3", card3_style_value)],
-         [Paragraph(f"Reject from data (Grade=REJECT): <b>{reject_from_data:,.2f} m3</b>", card3_extra_style)]],
+         [Paragraph(f"{production_m3:,.2f} m3", card3_style_value)]],
         colWidths=[54 * mm],
     )
     card3_inner.setStyle(TableStyle([
@@ -757,7 +756,6 @@ if uploaded_file is not None:
                 f'<div style="font-size:15px; color:{COLOR_TEXT_MUTED}; font-weight:600;">Production Volume</div>'
                 f'<div style="font-size:38px; font-weight:800; color:{THEME_PRIMARY}; margin:4px 0;">{production_m3:,.2f}</div>'
                 f'<div style="font-size:13px; color:{COLOR_TEXT_MUTED};">m³</div>'
-                f'<div style="font-size:12px; color:{COLOR_TEXT_MUTED}; margin-top:4px;">Reject from data (Grade=REJECT): <b>{reject_from_data:,.2f} m³</b></div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
