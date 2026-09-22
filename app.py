@@ -42,19 +42,19 @@ COLOR_TEXT_MUTED = "#6B7280"
 # Applies to both the on-screen Dashboard and the exported JPG.
 # ---------------------------------------------------------------
 THEME_COLORS = {
-    "blue":   {"primary": "#2C3E6B", "bar": "#1B3A6B", "bar_line": "#0F2647"},
-    "yellow": {"primary": "#8A6D1D", "bar": "#D4A017", "bar_line": "#8A6D1D"},
-    "red":    {"primary": "#8B2E22", "bar": "#B8352A", "bar_line": "#7A251C"},
+    "blue":  {"primary": "#0EA5E9", "bar": "#0284C7", "bar_line": "#075985"},
+    "green": {"primary": "#0A9B6D", "bar": "#0A9B6D", "bar_line": "#06724F"},
+    "navy":  {"primary": "#0B0F3D", "bar": "#0B0F3D", "bar_line": "#000000"},
 }
 
 def theme_for_day_count(n_days: int) -> str:
-    """1 day -> blue, 2-27 days -> yellow, 28+ days (a full month) -> red."""
+    """1 day -> blue, 2-27 days -> green, 28+ days (a full month) -> navy."""
     if n_days <= 1:
         return "blue"
     elif n_days <= 27:
-        return "yellow"
+        return "green"
     else:
-        return "red"
+        return "navy"
 
 st.markdown(
     f"""
@@ -571,7 +571,7 @@ if uploaded_file is not None:
         # header_mode drives the report/dashboard title: a single day gets
         # "As of ...", a 28-31 day span (a full month) gets "Monthly report
         # : <Month> <BE year>", anything else keeps "Period : <range>".
-        header_mode = "single_day" if is_single_day else ("monthly" if theme_key == "red" else "range")
+        header_mode = "single_day" if is_single_day else ("monthly" if theme_key == "navy" else "range")
 
         mask = (df["วันที่เกรด"].dt.date >= start_d) & (df["วันที่เกรด"].dt.date <= end_d)
         df_period = df.loc[mask].copy()
