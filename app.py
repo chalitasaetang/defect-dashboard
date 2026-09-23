@@ -214,6 +214,7 @@ def build_pdf_report(
     pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
     grade_summary_df, loc_summary_df, top5_df, defect_df_full,
     primary_hex=None, bar_hex=None, bar_line_hex=None, header_mode="range",
+    pct_aa=None, target_aa_pct=None, bcr_defect_m3=None,
 ) -> bytes:
     """Compact single-page (A4) defect summary report, laid out to mirror the
     dashboard: Grade + Source breakdown stacked on the left, Top-5 chart on
@@ -227,6 +228,10 @@ def build_pdf_report(
     "monthly" -> header reads "Monthly report : <period_label>" (period_label
     should be a "<Month> <BE year>" string, e.g. "August 2569"); "range"
     (default) -> header reads "Period : <period_label>".
+    pct_aa / target_aa_pct / bcr_defect_m3: optional 4th card, %AA Grade =
+    (Production - B/C/REJECT defects) / Production * 100. Unlike the other
+    two %, higher is better here, so its Over/Within badge direction is
+    flipped (below target = bad). Card is omitted if pct_aa is None.
     """
     font_name = register_thai_font()
     primary_hex = primary_hex or COLOR_PRIMARY
@@ -262,11 +267,12 @@ def build_pdf_report(
     def status_txt(val, target):
         return "Over Target" if val > target else "Within Target"
 
-    def make_summary_card(title, value_text, target_text, status_over, extra_label, extra_value, accent_hex):
+    def make_summary_card(title, value_text, target_text, status_over, extra_label, extra_value, accent_hex, below_label=False, width_mm=42):
         status_color = colors.HexColor(COLOR_BAD) if status_over else colors.HexColor(COLOR_GOOD)
-        status_label = "⚠ Over Target" if status_over else "✓ Within Target"
+        over_word = "Below Target" if below_label else "Over Target"
+        status_label = f"⚠ {over_word}" if status_over else "✓ Within Target"
         card_style = ParagraphStyle("card_title", fontName=font_name, fontSize=8.5, leading=10, textColor=colors.HexColor(COLOR_TEXT_MUTED))
-        card_value_style = ParagraphStyle("card_value", fontName=font_name, fontSize=19, leading=22, textColor=status_color)
+        card_value_style = ParagraphStyle("card_value", fontName=font_name, fontSize=17, leading=20, textColor=status_color)
         card_extra_style = ParagraphStyle("card_extra", fontName=font_name, fontSize=7.5, leading=9.5, textColor=colors.HexColor(COLOR_TEXT_MUTED))
         card_status_style = ParagraphStyle("card_status", fontName=font_name, fontSize=7.5, leading=9.5, textColor=status_color)
         card_target_style = ParagraphStyle("card_target", fontName=font_name, fontSize=6.5, leading=8, textColor=colors.HexColor(COLOR_TEXT_MUTED), alignment=2)
@@ -277,7 +283,7 @@ def build_pdf_report(
              [Paragraph(value_text, card_value_style)],
              [Paragraph(f"{extra_label}: <b>{extra_value}</b>", card_extra_style)],
              [Paragraph(status_label, card_status_style)]],
-            colWidths=[54 * mm],
+            colWidths=[width_mm * mm],
         )
         inner.setStyle(TableStyle([
             ("LEFTPADDING", (0, 0), (-1, -1), 8),
@@ -290,23 +296,29 @@ def build_pdf_report(
         ]))
         return inner
 
+    has_aa_card = pct_aa is not None
+    card_width_mm = 42 if has_aa_card else 43.5
+
     card1 = make_summary_card(
         "Total Defect %", f"{pct_defect:.2f}%", f"{target_defect_pct:.2f}%",
         pct_defect > target_defect_pct, "Total Defect", f"{total_defect_m3:,.2f} m3",
         colors.HexColor(COLOR_BAD if pct_defect > target_defect_pct else COLOR_GOOD),
+        width_mm=card_width_mm,
     )
     card2 = make_summary_card(
         "Reject after press %", f"{pct_reject:.2f}%", f"{target_reject_pct:.2f}%",
         pct_reject > target_reject_pct, "Reject after press", f"{reject_m3_input:,.2f} m3",
         colors.HexColor(COLOR_BAD if pct_reject > target_reject_pct else COLOR_GOOD),
+        width_mm=card_width_mm,
     )
-    card3_style_value = ParagraphStyle("card3_value", fontName=font_name, fontSize=19, leading=22, textColor=colors.HexColor(primary_hex))
+    card3_style_value = ParagraphStyle("card3_value", fontName=font_name, fontSize=14.5, leading=17, textColor=colors.HexColor(primary_hex))
     card3_title_style = ParagraphStyle("card3_title", fontName=font_name, fontSize=8.5, leading=10, textColor=colors.HexColor(COLOR_TEXT_MUTED))
     card3_extra_style = ParagraphStyle("card3_extra", fontName=font_name, fontSize=7.5, leading=9.5, textColor=colors.HexColor(COLOR_TEXT_MUTED))
+    card3_width_mm = 39 if has_aa_card else card_width_mm
     card3_inner = Table(
         [[Paragraph("Production Volume", card3_title_style)],
          [Paragraph(f"{production_m3:,.2f} m3", card3_style_value)]],
-        colWidths=[54 * mm],
+        colWidths=[card3_width_mm * mm],
     )
     card3_inner.setStyle(TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
@@ -318,7 +330,23 @@ def build_pdf_report(
         ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor(COLOR_BORDER)),
     ]))
 
-    summary_row = Table([[card1, card2, card3_inner]], colWidths=[57 * mm, 57 * mm, 57 * mm])
+    card_cells = [card1, card2, card3_inner]
+    card_widths = [card_width_mm * mm, card_width_mm * mm, card3_width_mm * mm]
+
+    if has_aa_card:
+        target_aa_val = target_aa_pct if target_aa_pct is not None else 0.0
+        bcr_val = bcr_defect_m3 if bcr_defect_m3 is not None else 0.0
+        below_aa_target = pct_aa < target_aa_val
+        card4 = make_summary_card(
+            "%AA Grade", f"{pct_aa:.2f}%", f"{target_aa_val:.2f}%",
+            below_aa_target, "B+C+REJECT", f"{bcr_val:,.2f} m3",
+            colors.HexColor(COLOR_BAD if below_aa_target else COLOR_GOOD),
+            below_label=True, width_mm=card_width_mm,
+        )
+        card_cells.append(card4)
+        card_widths.append(card_width_mm * mm)
+
+    summary_row = Table([card_cells], colWidths=card_widths)
     summary_row.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -539,7 +567,7 @@ if uploaded_file is not None:
             if production_line == "Other (custom)":
                 production_line = st.text_input("Enter production line name", value="")
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             date_range = st.date_input(
                 "Date Range (BE, as in source file)",
@@ -552,6 +580,8 @@ if uploaded_file is not None:
             target_defect_pct = st.number_input("Target Defect %", min_value=0.0, value=1.0, step=0.1, format="%.2f")
         with c3:
             target_reject_pct = st.number_input("Target Reject after press %", min_value=0.0, value=1.0, step=0.1, format="%.2f")
+        with c4:
+            target_aa_pct = st.number_input("Target %AA Grade", min_value=0.0, max_value=100.0, value=99.0, step=0.1, format="%.2f")
 
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_d, end_d = date_range
@@ -595,6 +625,11 @@ if uploaded_file is not None:
         pct_reject = (reject_m3_input / production_m3 * 100) if production_m3 > 0 else 0.0
 
         reject_from_data = defect_df.loc[defect_df["เกรด"] == "REJECT", "จำนวน(Cu)"].sum()
+
+        # %AA Grade = (Production - defects in Grade B, C, REJECT) / Production * 100
+        # Only rows whose "เกรด" is exactly B, C, or REJECT count (e.g. "B/A" is excluded).
+        bcr_defect_m3 = defect_df.loc[defect_df["เกรด"].isin(["B", "C", "REJECT"]), "จำนวน(Cu)"].sum()
+        pct_aa = ((production_m3 - bcr_defect_m3) / production_m3 * 100) if production_m3 > 0 else 0.0
 
         # Pre-compute summaries (also needed by the JPG export button near the top)
         grade_summary = pd.DataFrame()
@@ -658,6 +693,7 @@ if uploaded_file is not None:
             pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
             grade_summary_json, loc_summary_json, top5_json, defect_df_json,
             primary_hex, bar_hex, bar_line_hex, header_mode,
+            pct_aa, target_aa_pct, bcr_defect_m3,
         ):
             grade_summary_df = pd.read_json(BytesIO(grade_summary_json.encode()), orient="split")
             loc_summary_df = pd.read_json(BytesIO(loc_summary_json.encode()), orient="split")
@@ -672,6 +708,7 @@ if uploaded_file is not None:
                 top5_df=top5_df, defect_df_full=defect_df_full,
                 primary_hex=primary_hex, bar_hex=bar_hex, bar_line_hex=bar_line_hex,
                 header_mode=header_mode,
+                pct_aa=pct_aa, target_aa_pct=target_aa_pct, bcr_defect_m3=bcr_defect_m3,
             )
             return pdf_bytes_to_jpg(pdf_bytes)
 
@@ -701,6 +738,7 @@ if uploaded_file is not None:
                         grade_summary.to_json(orient="split"), loc_summary.to_json(orient="split"),
                         top5.to_json(orient="split"), defect_df.to_json(orient="split"),
                         THEME_PRIMARY, THEME_BAR, THEME_BAR_LINE, header_mode,
+                        pct_aa, target_aa_pct, bcr_defect_m3,
                     )
                 st.download_button(
                     label="⬇️ Download JPG",
@@ -725,10 +763,16 @@ if uploaded_file is not None:
         else:
             period_label_display = f"Period: {period_label}"
 
-        def summary_box(title, value_pct, target_pct, extra_m3_label, extra_m3_value):
-            over = value_pct > target_pct
-            status_color = COLOR_BAD if over else COLOR_GOOD
-            status_text = '⚠️ Over Target' if over else '✅ Within Target'
+        def summary_box(title, value_pct, target_pct, extra_m3_label, extra_m3_value, higher_is_better=False):
+            # Defect/Reject: higher than target is bad (over_threshold).
+            # %AA Grade: lower than target is bad — direction flips.
+            below_target = value_pct < target_pct
+            over_threshold = (not higher_is_better and value_pct > target_pct) or (higher_is_better and below_target)
+            status_color = COLOR_BAD if over_threshold else COLOR_GOOD
+            if higher_is_better:
+                status_text = '⚠️ Below Target' if over_threshold else '✅ Within Target'
+            else:
+                status_text = '⚠️ Over Target' if over_threshold else '✅ Within Target'
             st.markdown(
                 f'<div style="background-color:{COLOR_BG_CARD}; border:1px solid {COLOR_BORDER}; '
                 f'border-left:5px solid {status_color}; border-radius:10px; padding:18px; '
@@ -745,7 +789,7 @@ if uploaded_file is not None:
             )
 
         st.markdown(f"#### 🗓️ {period_label_display}")
-        box1, box2, box3 = st.columns(3)
+        box1, box2, box3, box4 = st.columns(4)
         with box1:
             summary_box("Total Defect %", pct_defect, target_defect_pct, "Total Defect", total_defect_m3)
         with box2:
@@ -759,6 +803,8 @@ if uploaded_file is not None:
                 f'</div>',
                 unsafe_allow_html=True,
             )
+        with box4:
+            summary_box("%AA Grade", pct_aa, target_aa_pct, "B+C+REJECT", bcr_defect_m3, higher_is_better=True)
 
         if production_m3 <= 0:
             st.warning(
