@@ -330,8 +330,8 @@ def build_pdf_report(
         ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor(COLOR_BORDER)),
     ]))
 
-    card_cells = [card1, card2, card3_inner]
-    card_widths = [card_width_mm * mm, card_width_mm * mm, card3_width_mm * mm]
+    card_cells = [card1, card2]
+    card_widths = [card_width_mm * mm, card_width_mm * mm]
 
     if has_aa_card:
         target_aa_val = target_aa_pct if target_aa_pct is not None else 0.0
@@ -343,8 +343,12 @@ def build_pdf_report(
             colors.HexColor(COLOR_BAD if below_aa_target else COLOR_GOOD),
             below_label=True, width_mm=card_width_mm,
         )
+        # %AA Grade now sits in the 3rd slot, Production Volume in the 4th.
         card_cells.append(card4)
         card_widths.append(card_width_mm * mm)
+
+    card_cells.append(card3_inner)
+    card_widths.append(card3_width_mm * mm)
 
     summary_row = Table([card_cells], colWidths=card_widths)
     summary_row.setStyle(TableStyle([
@@ -795,6 +799,8 @@ if uploaded_file is not None:
         with box2:
             summary_box("Reject after press %", pct_reject, target_reject_pct, "Reject after press", reject_m3_input)
         with box3:
+            summary_box("%AA Grade", pct_aa, target_aa_pct, "B+C+REJECT", bcr_defect_m3, higher_is_better=True)
+        with box4:
             st.markdown(
                 f'<div style="background-color:{COLOR_BG_CARD}; border:1px solid {COLOR_BORDER}; border-left:5px solid {THEME_PRIMARY}; border-radius:10px; padding:18px; margin-bottom:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">'
                 f'<div style="font-size:15px; color:{COLOR_TEXT_MUTED}; font-weight:600;">Production Volume</div>'
@@ -803,8 +809,6 @@ if uploaded_file is not None:
                 f'</div>',
                 unsafe_allow_html=True,
             )
-        with box4:
-            summary_box("%AA Grade", pct_aa, target_aa_pct, "B+C+REJECT", bcr_defect_m3, higher_is_better=True)
 
         if production_m3 <= 0:
             st.warning(
