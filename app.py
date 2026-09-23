@@ -311,10 +311,10 @@ def build_pdf_report(
         colors.HexColor(COLOR_BAD if pct_reject > target_reject_pct else COLOR_GOOD),
         width_mm=card_width_mm,
     )
-    card3_style_value = ParagraphStyle("card3_value", fontName=font_name, fontSize=14.5, leading=17, textColor=colors.HexColor(primary_hex))
+    card3_style_value = ParagraphStyle("card3_value", fontName=font_name, fontSize=13, leading=15.5, textColor=colors.HexColor(primary_hex))
     card3_title_style = ParagraphStyle("card3_title", fontName=font_name, fontSize=8.5, leading=10, textColor=colors.HexColor(COLOR_TEXT_MUTED))
     card3_extra_style = ParagraphStyle("card3_extra", fontName=font_name, fontSize=7.5, leading=9.5, textColor=colors.HexColor(COLOR_TEXT_MUTED))
-    card3_width_mm = 39 if has_aa_card else card_width_mm
+    card3_width_mm = card_width_mm
     card3_inner = Table(
         [[Paragraph("Production Volume", card3_title_style)],
          [Paragraph(f"{production_m3:,.2f} m3", card3_style_value)]],
