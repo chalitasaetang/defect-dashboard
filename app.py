@@ -740,7 +740,8 @@ if uploaded_file is not None:
                         pct_defect, target_defect_pct, total_defect_m3,
                         pct_reject, target_reject_pct, reject_m3_input, reject_from_data,
                         grade_summary.to_json(orient="split"), loc_summary.to_json(orient="split"),
-                        top5.to_json(orient="split"), defect_df.to_json(orient="split"),
+                        top5.to_json(orient="split"),
+                        defect_df[[c for c in ["ตำหนิ", "จำนวน(Cu)", "จำนวน (PCS)", "ข้อมูล", "เกรด", "จาก"] if c in defect_df.columns]].to_json(orient="split"),
                         THEME_PRIMARY, THEME_BAR, THEME_BAR_LINE, header_mode,
                         pct_aa, target_aa_pct, bcr_defect_m3,
                     )
